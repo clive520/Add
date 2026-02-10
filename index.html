@@ -1,0 +1,804 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>班級加分系統 | 智慧教室</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Vue 3 -->
+    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+    <!-- Phosphor Icons -->
+    <script src="https://unpkg.com/@phosphor-icons/web"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700&display=swap');
+        body { font-family: 'Noto Sans TC', sans-serif; background-color: #f3f4f6; }
+        .card-hover { transition: all 0.2s; }
+        .card-hover:hover { transform: translateY(-2px); box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1); }
+        .loading-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(255,255,255,0.8); z-index: 50; display: flex; justify-content: center; align-items: center; }
+    </style>
+</head>
+<body>
+    <div id="app" class="min-h-screen flex flex-col">
+        
+        <!-- Loading Spinner -->
+        <div v-if="loading" class="loading-overlay">
+            <div class="flex flex-col items-center">
+                <i class="ph ph-spinner animate-spin text-4xl text-blue-600"></i>
+                <p class="mt-2 text-gray-600 font-medium">資料處理中...</p>
+            </div>
+        </div>
+
+        <!-- Navbar -->
+        <nav class="bg-white shadow-sm sticky top-0 z-40">
+            <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+                <div class="flex justify-between h-16">
+                    <div class="flex items-center cursor-pointer" @click="goHome">
+                        <i class="ph ph-chalkboard-teacher text-3xl text-blue-600 mr-2"></i>
+                        <h1 class="text-xl font-bold text-gray-800">班級加分通</h1>
+                    </div>
+                    <div class="flex items-center space-x-4">
+                        <!-- 當前身分顯示 -->
+                        <span v-if="currentUser.name" class="text-sm bg-blue-100 text-blue-800 py-1 px-3 rounded-full">
+                            {{ currentUser.role === 'teacher' ? '👨‍🏫' : '👶' }} {{ currentUser.name }}
+                        </span>
+                        
+                        <button @click="showInfoModal = true" class="text-gray-500 hover:text-blue-600 p-2" title="系統說明">
+                            <i class="ph ph-info text-2xl"></i>
+                        </button>
+                        <button @click="showSettingsModal = true" class="text-gray-500 hover:text-blue-600 p-2" title="設定 API">
+                            <i class="ph ph-gear text-2xl"></i>
+                        </button>
+                        <button v-if="currentUser.token" @click="logout" class="text-red-500 hover:text-red-700 p-2 font-medium">
+                            登出
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </nav>
+
+        <!-- Main Content Area -->
+        <main class="flex-grow max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 w-full">
+            
+            <!-- 0. API Url 未設定提示 -->
+            <div v-if="!gasUrl" class="bg-yellow-50 border-l-4 border-yellow-400 p-4 mb-6">
+                <div class="flex">
+                    <div class="flex-shrink-0">
+                        <i class="ph ph-warning text-yellow-400 text-xl"></i>
+                    </div>
+                    <div class="ml-3">
+                        <p class="text-sm text-yellow-700">
+                            尚未設定後端網址。請點擊右上角 <i class="ph ph-gear"></i> 設定您的 Google Apps Script URL。
+                        </p>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- 0.1 ID 重複警告 (新增功能) -->
+            <div v-if="hasDuplicateIds" class="bg-red-50 border-l-4 border-red-500 p-4 mb-6">
+                <div class="flex">
+                     <div class="flex-shrink-0">
+                        <i class="ph ph-warning-circle text-red-500 text-xl"></i>
+                    </div>
+                    <div class="ml-3">
+                        <h3 class="text-lg font-bold text-red-800">偵測到資料異常：學生 ID 重複</h3>
+                        <p class="text-sm text-red-700 mt-1">
+                            系統偵測到以下學生擁有重複的 ID，這會導致點選 A 學生時，B 學生也同時被選取。
+                            <br><strong>解決方法：</strong>
+                            1. 請到 Google 試算表的「學生資料」頁面刪除這些學生的資料列。
+                            2. 確保後端 Apps Script 程式碼已更新並重新部署。
+                            3. 重新使用「新增學生」匯入資料。
+                        </p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 1. 入口頁面 (選擇身分) -->
+            <div v-if="view === 'home'" class="grid grid-cols-1 md:grid-cols-3 gap-6 mt-10">
+                <div @click="view = 'teacher-login'" class="bg-white p-8 rounded-xl shadow-sm text-center cursor-pointer card-hover border-t-4 border-blue-500">
+                    <div class="bg-blue-100 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4">
+                        <i class="ph ph-presentation-chart text-3xl text-blue-600"></i>
+                    </div>
+                    <h2 class="text-xl font-bold text-gray-800">我是老師</h2>
+                    <p class="text-gray-500 mt-2">管理班級、建立學生、評分</p>
+                </div>
+
+                <div @click="prepareHelperLogin" class="bg-white p-8 rounded-xl shadow-sm text-center cursor-pointer card-hover border-t-4 border-green-500">
+                    <div class="bg-green-100 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4">
+                        <i class="ph ph-hand-waving text-3xl text-green-600"></i>
+                    </div>
+                    <h2 class="text-xl font-bold text-gray-800">我是小幫手</h2>
+                    <p class="text-gray-500 mt-2">協助老師加分 (需輸入座號密碼)</p>
+                </div>
+
+                <div @click="preparePublicView" class="bg-white p-8 rounded-xl shadow-sm text-center cursor-pointer card-hover border-t-4 border-purple-500">
+                    <div class="bg-purple-100 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4">
+                        <i class="ph ph-users text-3xl text-purple-600"></i>
+                    </div>
+                    <h2 class="text-xl font-bold text-gray-800">查看排行榜</h2>
+                    <p class="text-gray-500 mt-2">任何人皆可查看班級分數</p>
+                </div>
+            </div>
+
+            <!-- 2. 老師登入/註冊 -->
+            <div v-if="view === 'teacher-login'" class="max-w-md mx-auto bg-white p-8 rounded-xl shadow-sm mt-10">
+                <h2 class="text-2xl font-bold text-gray-800 mb-6 text-center">{{ isRegistering ? '老師註冊' : '老師登入' }}</h2>
+                <form @submit.prevent="handleTeacherAuth">
+                    <div class="mb-4">
+                        <label class="block text-gray-700 text-sm font-bold mb-2">帳號 (Email)</label>
+                        <input v-model="authForm.account" type="text" required class="w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500">
+                    </div>
+                    <div class="mb-4">
+                        <label class="block text-gray-700 text-sm font-bold mb-2">密碼</label>
+                        <input v-model="authForm.password" type="password" required class="w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500">
+                    </div>
+                    <div v-if="isRegistering" class="mb-4">
+                        <label class="block text-gray-700 text-sm font-bold mb-2">姓名</label>
+                        <input v-model="authForm.name" type="text" required class="w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500">
+                    </div>
+                    <button type="submit" class="w-full bg-blue-600 text-white font-bold py-2 px-4 rounded-lg hover:bg-blue-700 transition">
+                        {{ isRegistering ? '註冊帳號' : '登入' }}
+                    </button>
+                </form>
+                <div class="mt-4 text-center">
+                    <button @click="isRegistering = !isRegistering" class="text-sm text-blue-500 hover:underline">
+                        {{ isRegistering ? '已有帳號？返回登入' : '還沒有帳號？立即註冊' }}
+                    </button>
+                </div>
+            </div>
+
+            <!-- 3. 小幫手/公開介面 - 班級選擇器 -->
+            <div v-if="view === 'class-selector'" class="max-w-md mx-auto mt-10">
+                <h2 class="text-2xl font-bold text-gray-800 mb-6 text-center">請選擇班級</h2>
+                <div class="bg-white rounded-xl shadow-sm overflow-hidden">
+                    <ul class="divide-y divide-gray-200">
+                        <li v-for="cls in publicClasses" :key="cls.id" 
+                            @click="selectClassForRole(cls)"
+                            class="p-4 hover:bg-blue-50 cursor-pointer flex justify-between items-center transition">
+                            <span class="font-medium text-lg">{{ cls.name }}</span>
+                            <i class="ph ph-caret-right text-gray-400"></i>
+                        </li>
+                    </ul>
+                </div>
+                <button @click="view = 'home'" class="mt-4 w-full text-gray-500">返回首頁</button>
+            </div>
+
+            <!-- 4. 小幫手登入 -->
+            <div v-if="view === 'helper-login'" class="max-w-md mx-auto bg-white p-8 rounded-xl shadow-sm mt-10">
+                <h2 class="text-2xl font-bold text-gray-800 mb-2 text-center">小幫手登入</h2>
+                <p class="text-center text-gray-500 mb-6">班級：{{ currentClass.name }}</p>
+                <form @submit.prevent="handleHelperAuth">
+                    <div class="mb-4">
+                        <label class="block text-gray-700 text-sm font-bold mb-2">座號</label>
+                        <input v-model="helperForm.seatNo" type="number" required class="w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500">
+                    </div>
+                    <div class="mb-4">
+                        <label class="block text-gray-700 text-sm font-bold mb-2">密碼 (4位數)</label>
+                        <input v-model="helperForm.password" type="password" required class="w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500">
+                    </div>
+                    <button type="submit" class="w-full bg-green-600 text-white font-bold py-2 px-4 rounded-lg hover:bg-green-700 transition">
+                        登入系統
+                    </button>
+                </form>
+                <button @click="view = 'class-selector'" class="mt-4 w-full text-gray-500 text-sm">返回班級選擇</button>
+            </div>
+
+            <!-- 5. 老師後台 - 班級列表 -->
+            <div v-if="view === 'teacher-dashboard-classes'" class="mt-6">
+                <div class="flex justify-between items-center mb-6">
+                    <h2 class="text-2xl font-bold text-gray-800">我的班級管理</h2>
+                    <button @click="showCreateClassModal = true" class="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 flex items-center">
+                        <i class="ph ph-plus mr-2"></i> 新增班級
+                    </button>
+                </div>
+                
+                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                    <div v-for="cls in myClasses" :key="cls.id" class="bg-white p-6 rounded-xl shadow-sm border border-gray-100 card-hover flex flex-col justify-between h-40">
+                        <div>
+                            <h3 class="text-xl font-bold text-gray-800 mb-1">{{ cls.name }}</h3>
+                            <p class="text-sm text-gray-500">ID: {{ cls.id }}</p>
+                        </div>
+                        <button @click="enterClass(cls)" class="self-end text-blue-600 font-medium hover:text-blue-800 flex items-center">
+                            進入管理 <i class="ph ph-arrow-right ml-1"></i>
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 6. 老師後台 - 班級操作 (學生列表/評分) -->
+            <div v-if="view === 'teacher-class-manage'" class="mt-2">
+                <!-- 麵包屑 -->
+                <div class="flex items-center text-gray-500 mb-4 text-sm">
+                    <span class="cursor-pointer hover:text-blue-600" @click="view = 'teacher-dashboard-classes'">班級列表</span>
+                    <i class="ph ph-caret-right mx-2"></i>
+                    <span class="font-bold text-gray-800">{{ currentClass.name }}</span>
+                </div>
+
+                <!-- 工具列 -->
+                <div class="bg-white p-4 rounded-xl shadow-sm mb-6 flex flex-wrap gap-3 items-center">
+                    <button @click="tab = 'score'" :class="tab === 'score' ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-600'" class="px-4 py-2 rounded-lg font-medium transition">
+                        <i class="ph ph-trophy mr-1"></i> 加減分
+                    </button>
+                    <button @click="tab = 'students'" :class="tab === 'students' ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-600'" class="px-4 py-2 rounded-lg font-medium transition">
+                        <i class="ph ph-users mr-1"></i> 學生管理
+                    </button>
+                    <div class="flex-grow"></div>
+                    <div v-if="tab === 'score'" class="flex gap-2">
+                        <button @click="applyScore(1)" class="bg-green-100 text-green-700 hover:bg-green-200 px-3 py-2 rounded-lg font-bold flex items-center">
+                            <i class="ph ph-plus mr-1"></i> 1分
+                        </button>
+                         <button @click="applyScore(5)" class="bg-green-100 text-green-700 hover:bg-green-200 px-3 py-2 rounded-lg font-bold flex items-center">
+                            <i class="ph ph-plus mr-1"></i> 5分
+                        </button>
+                        <button @click="applyScore(-1)" class="bg-red-100 text-red-700 hover:bg-red-200 px-3 py-2 rounded-lg font-bold flex items-center">
+                            <i class="ph ph-minus mr-1"></i> 1分
+                        </button>
+                    </div>
+                    <div v-if="tab === 'students'">
+                        <button @click="showAddStudentModal = true" class="bg-indigo-600 text-white px-3 py-2 rounded-lg hover:bg-indigo-700">
+                             <i class="ph ph-user-plus mr-1"></i> 新增學生
+                        </button>
+                    </div>
+                </div>
+
+                <!-- 內容區：評分模式 -->
+                <div v-if="tab === 'score'">
+                    <!-- 篩選器 -->
+                    <div class="flex gap-2 mb-4 overflow-x-auto pb-2">
+                        <button @click="filterGroup = 'all'; selectedStudents = []" :class="filterGroup === 'all' ? 'ring-2 ring-blue-500 border-blue-500' : 'border-gray-200'" class="bg-white px-4 py-2 rounded-lg border whitespace-nowrap">全班</button>
+                        <button @click="filterGroup = 'boy'; selectedStudents = []" :class="filterGroup === 'boy' ? 'ring-2 ring-blue-500 border-blue-500' : 'border-gray-200'" class="bg-white px-4 py-2 rounded-lg border whitespace-nowrap">男生</button>
+                        <button @click="filterGroup = 'girl'; selectedStudents = []" :class="filterGroup === 'girl' ? 'ring-2 ring-blue-500 border-blue-500' : 'border-gray-200'" class="bg-white px-4 py-2 rounded-lg border whitespace-nowrap">女生</button>
+                        <template v-for="g in uniqueGroups" :key="g">
+                            <button v-if="g !== '無'" @click="filterGroup = g; selectedStudents = []" :class="filterGroup === g ? 'ring-2 ring-blue-500 border-blue-500' : 'border-gray-200'" class="bg-white px-4 py-2 rounded-lg border whitespace-nowrap">{{ g }}</button>
+                        </template>
+                    </div>
+
+                    <!-- 全選按鈕 -->
+                    <div class="flex justify-between items-center mb-2 px-1">
+                        <label class="flex items-center space-x-2 cursor-pointer select-none">
+                            <input type="checkbox" v-model="selectAll" @change="toggleSelectAll" class="w-5 h-5 text-blue-600 rounded focus:ring-blue-500">
+                            <span class="text-gray-700 font-medium">全選當前顯示學生</span>
+                        </label>
+                        <span class="text-sm text-gray-500">已選 {{ selectedStudents.length }} 人</span>
+                    </div>
+
+                    <!-- 學生卡片網格 -->
+                    <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3">
+                        <div v-for="stu in filteredStudents" :key="stu.id" 
+                            @click="toggleSelection(stu.id)"
+                            :class="selectedStudents.includes(stu.id) ? 'ring-2 ring-blue-500 bg-blue-50' : 'bg-white hover:bg-gray-50'"
+                            class="p-4 rounded-xl border border-gray-200 cursor-pointer transition relative overflow-hidden">
+                            
+                            <!-- 皇冠 (最高分) -->
+                            <div v-if="isTopScore(stu.score)" class="absolute top-0 right-0 p-1">
+                                <i class="ph ph-crown-simple-fill text-yellow-400 text-xl"></i>
+                            </div>
+
+                            <div class="flex justify-between items-start mb-2">
+                                <span class="text-xs font-mono bg-gray-200 px-1.5 rounded text-gray-600">{{ stu.seat }}</span>
+                                <span :class="stu.gender === '男' ? 'text-blue-400' : 'text-pink-400'"><i class="ph ph-gender-intersex"></i></span>
+                            </div>
+                            <h3 class="font-bold text-gray-800 text-lg truncate">{{ stu.name }}</h3>
+                            <div class="mt-2 flex justify-between items-end">
+                                <span class="text-xs text-gray-500 bg-gray-100 px-1 rounded">{{ stu.group }}</span>
+                                <span class="text-2xl font-black" :class="stu.score < 0 ? 'text-red-500' : 'text-blue-600'">{{ stu.score }}</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 內容區：學生管理列表 -->
+                <div v-if="tab === 'students'" class="bg-white rounded-xl shadow-sm overflow-hidden">
+                    <div class="overflow-x-auto">
+                        <table class="min-w-full divide-y divide-gray-200">
+                            <thead class="bg-gray-50">
+                                <tr>
+                                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">座號</th>
+                                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">姓名</th>
+                                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">性別</th>
+                                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">密碼</th>
+                                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">角色</th>
+                                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">分組</th>
+                                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">操作</th>
+                                </tr>
+                            </thead>
+                            <tbody class="bg-white divide-y divide-gray-200">
+                                <tr v-for="stu in students" :key="stu.id">
+                                    <td class="px-6 py-4 whitespace-nowrap">{{ stu.seat }}</td>
+                                    <td class="px-6 py-4 whitespace-nowrap font-medium">{{ stu.name }}</td>
+                                    <td class="px-6 py-4 whitespace-nowrap">{{ stu.gender }}</td>
+                                    <td class="px-6 py-4 whitespace-nowrap font-mono text-gray-500">{{ stu.password }}</td>
+                                    <td class="px-6 py-4 whitespace-nowrap">
+                                        <span :class="stu.role === '小幫手' ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-800'" class="px-2 inline-flex text-xs leading-5 font-semibold rounded-full">
+                                            {{ stu.role }}
+                                        </span>
+                                    </td>
+                                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                                        <input type="text" v-model.lazy="stu.group" @change="updateStudentAttr(stu, 'group', $event.target.value)" class="border rounded px-2 py-1 w-20 text-center">
+                                    </td>
+                                    <td class="px-6 py-4 whitespace-nowrap text-sm font-medium">
+                                        <button @click="toggleHelperRole(stu)" class="text-indigo-600 hover:text-indigo-900 mr-2">
+                                            {{ stu.role === '小幫手' ? '移除幫手' : '設為幫手' }}
+                                        </button>
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 7. 公開 / 小幫手 看板 -->
+            <div v-if="view === 'public-board'" class="mt-4">
+                 <div class="flex justify-between items-center mb-6">
+                    <h2 class="text-2xl font-bold text-gray-800">{{ currentClass.name }} - 排行榜</h2>
+                    <button v-if="currentUser.role !== 'helper'" @click="view = 'class-selector'" class="text-gray-500 hover:text-blue-600">
+                        <i class="ph ph-arrow-left"></i> 返回選單
+                    </button>
+                </div>
+
+                <!-- 小幫手控制列 -->
+                <div v-if="currentUser.role === 'helper'" class="bg-yellow-50 border-l-4 border-yellow-400 p-4 mb-6 flex justify-between items-center">
+                     <div>
+                        <span class="font-bold text-yellow-800">小幫手模式</span>
+                        <p class="text-sm text-yellow-700">您可以點選同學進行加分。</p>
+                     </div>
+                     <div class="flex gap-2">
+                        <button @click="applyScore(1)" class="bg-white border border-yellow-300 text-yellow-800 px-3 py-1 rounded shadow-sm hover:bg-yellow-100 font-bold">+1分</button>
+                        <button @click="applyScore(-1)" class="bg-white border border-yellow-300 text-yellow-800 px-3 py-1 rounded shadow-sm hover:bg-yellow-100 font-bold">-1分</button>
+                     </div>
+                </div>
+
+                <!-- 排行榜展示 (只讀) -->
+                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                     <div v-for="(stu, index) in sortedStudents" :key="stu.id" 
+                          @click="currentUser.role === 'helper' ? toggleSelection(stu.id) : null"
+                          :class="[
+                            'p-4 rounded-xl shadow-sm flex items-center justify-between',
+                            index < 3 ? 'bg-gradient-to-r from-yellow-50 to-white border border-yellow-200' : 'bg-white border border-gray-100',
+                            currentUser.role === 'helper' && selectedStudents.includes(stu.id) ? 'ring-2 ring-blue-500' : ''
+                          ]">
+                        <div class="flex items-center">
+                            <div class="w-8 h-8 flex items-center justify-center font-bold text-gray-500 mr-3" 
+                                 :class="{'text-yellow-600 text-xl': index===0, 'text-gray-600 text-lg': index===1, 'text-orange-600 text-lg': index===2}">
+                                {{ index + 1 }}
+                            </div>
+                            <div>
+                                <div class="font-bold text-gray-800">{{ stu.name }}</div>
+                                <div class="text-xs text-gray-500">{{ stu.seat }}號</div>
+                            </div>
+                        </div>
+                        <div class="text-2xl font-black text-blue-600">{{ stu.score }}</div>
+                     </div>
+                </div>
+            </div>
+
+        </main>
+
+        <!-- Modals -->
+        
+        <!-- 設定 Modal -->
+        <div v-if="showSettingsModal" class="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50">
+            <div class="bg-white rounded-xl p-6 w-full max-w-lg mx-4">
+                <h3 class="text-xl font-bold mb-4">系統設定</h3>
+                <div class="mb-4">
+                    <label class="block text-sm font-bold text-gray-700 mb-2">Google Apps Script 網址 (GAS URL)</label>
+                    <input v-model="tempGasUrl" type="password" placeholder="https://script.google.com/macros/s/..." class="w-full border rounded px-3 py-2 text-sm">
+                    <p class="text-xs text-gray-500 mt-1">請貼上部署為 Web App 後的網址</p>
+                </div>
+                <!-- 額外 AI Key 設定 (依需求) -->
+                <div class="mb-6">
+                    <label class="block text-sm font-bold text-gray-700 mb-2">Gemini API Key (選填)</label>
+                    <input v-model="tempApiKey" type="password" placeholder="若無可留空" class="w-full border rounded px-3 py-2 text-sm">
+                </div>
+                <div class="flex justify-end gap-3">
+                    <button @click="resetSettings" class="text-red-500 hover:text-red-700 text-sm font-medium px-3">清除重置</button>
+                    <button @click="showSettingsModal = false" class="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded">取消</button>
+                    <button @click="saveSettings" class="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700">儲存</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- 說明 Modal -->
+        <div v-if="showInfoModal" class="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50">
+            <div class="bg-white rounded-xl p-6 w-full max-w-2xl mx-4 max-h-[80vh] overflow-y-auto">
+                <h3 class="text-xl font-bold mb-4">部署說明</h3>
+                <ol class="list-decimal list-inside text-sm text-gray-700 space-y-2 mb-4">
+                    <li>建立一個 Google Sheet，點選 <code>擴充功能</code> > <code>Apps Script</code>。</li>
+                    <li>將下方程式碼複製並貼上到編輯器中。</li>
+                    <li>點擊右上角 <code>部署</code> > <code>新增部署作業</code>。</li>
+                    <li>類型選擇 <code>網頁應用程式</code>。</li>
+                    <li>執行身分：<strong>我 (Me)</strong>。</li>
+                    <li>誰可以存取：<strong>任何人 (Anyone)</strong>。</li>
+                    <li>複製產生的網址，貼到本系統的設定 (⚙️) 中。</li>
+                </ol>
+                <div class="relative bg-gray-800 rounded-lg p-4">
+                    <button @click="copyCode" class="absolute top-2 right-2 bg-gray-700 text-white text-xs px-2 py-1 rounded hover:bg-gray-600">複製程式碼</button>
+                    <pre class="text-xs text-green-400 overflow-x-auto h-40"><code>// 請從上方 Code.gs 區塊複製完整程式碼...
+function doGet(e) { ... }
+function doPost(e) { ... }</code></pre>
+                </div>
+                <div class="mt-4 flex justify-end">
+                    <button @click="showInfoModal = false" class="px-4 py-2 bg-gray-200 text-gray-800 rounded hover:bg-gray-300">關閉</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- 建立班級 Modal -->
+        <div v-if="showCreateClassModal" class="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50">
+             <div class="bg-white rounded-xl p-6 w-full max-w-md mx-4">
+                <h3 class="text-xl font-bold mb-4">新增班級</h3>
+                <input v-model="newClassName" type="text" placeholder="例如：五年三班" class="w-full border rounded px-3 py-2 mb-4">
+                <div class="flex justify-end gap-2">
+                    <button @click="showCreateClassModal = false" class="px-4 py-2 text-gray-600 rounded">取消</button>
+                    <button @click="createClass" class="px-4 py-2 bg-blue-600 text-white rounded">建立</button>
+                </div>
+             </div>
+        </div>
+
+        <!-- 批次新增學生 Modal -->
+        <div v-if="showAddStudentModal" class="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50">
+             <div class="bg-white rounded-xl p-6 w-full max-w-2xl mx-4">
+                <h3 class="text-xl font-bold mb-2">批次新增學生</h3>
+                <p class="text-sm text-gray-500 mb-4">格式：座號 姓名 性別 (空格或Tab分隔，一行一位)</p>
+                <textarea v-model="batchStudentInput" placeholder="01 王小明 男&#10;02 李小美 女" class="w-full h-40 border rounded px-3 py-2 font-mono text-sm mb-4"></textarea>
+                <div class="flex justify-end gap-2">
+                    <button @click="showAddStudentModal = false" class="px-4 py-2 text-gray-600 rounded">取消</button>
+                    <button @click="addStudents" class="px-4 py-2 bg-blue-600 text-white rounded">匯入資料</button>
+                </div>
+             </div>
+        </div>
+
+    </div>
+
+    <script>
+        const { createApp, ref, computed, onMounted, watch } = Vue;
+
+        createApp({
+            setup() {
+                // --- State ---
+                const gasUrl = ref(localStorage.getItem('gas_app_url') || '');
+                const apiKey = ref(localStorage.getItem('gemini_api_key') || '');
+                const view = ref('home'); // home, teacher-login, helper-login, class-selector, teacher-dashboard-classes, teacher-class-manage, public-board
+                const loading = ref(false);
+                
+                // Modals
+                const showSettingsModal = ref(false);
+                const showInfoModal = ref(false);
+                const showCreateClassModal = ref(false);
+                const showAddStudentModal = ref(false);
+                const tempGasUrl = ref(gasUrl.value);
+                const tempApiKey = ref(apiKey.value);
+
+                // Auth & Data
+                const currentUser = ref({ name: '', role: '', token: '' }); // role: teacher, helper
+                const authForm = ref({ account: '', password: '', name: '' });
+                const isRegistering = ref(false);
+                const helperForm = ref({ seatNo: '', password: '' });
+
+                // Business Data
+                const myClasses = ref([]);
+                const publicClasses = ref([]);
+                const currentClass = ref({}); // {id, name}
+                const students = ref([]);
+                const newClassName = ref('');
+                const batchStudentInput = ref('');
+                
+                // Scoring UI
+                const tab = ref('score'); // score, students
+                const filterGroup = ref('all');
+                const selectedStudents = ref([]);
+                const selectAll = ref(false);
+
+                // --- Duplicate Check ---
+                const hasDuplicateIds = computed(() => {
+                    if (students.value.length === 0) return false;
+                    const ids = students.value.map(s => s.id);
+                    const uniqueIds = new Set(ids);
+                    return ids.length !== uniqueIds.size;
+                });
+
+                // --- API Helper ---
+                const callGas = async (action, data = {}) => {
+                    if (!gasUrl.value) {
+                        alert("請先設定 GAS URL");
+                        showSettingsModal.value = true;
+                        return null;
+                    }
+                    loading.value = true;
+                    try {
+                        const response = await fetch(gasUrl.value, {
+                            method: 'POST',
+                            body: JSON.stringify({ action, ...data })
+                        });
+                        const resJson = await response.json();
+                        loading.value = false;
+                        if (resJson.status === 'error') {
+                            alert('錯誤: ' + resJson.message);
+                            return null;
+                        }
+                        return resJson;
+                    } catch (e) {
+                        loading.value = false;
+                        console.error(e);
+                        alert("連線失敗，請檢查 URL 或網路狀態。");
+                        return null;
+                    }
+                };
+
+                // --- Auth Logic ---
+                const handleTeacherAuth = async () => {
+                    const action = isRegistering.value ? 'register_teacher' : 'login_teacher';
+                    const res = await callGas(action, { data: authForm.value });
+                    if (res && res.status === 'success') {
+                        if (isRegistering.value) {
+                            alert("註冊成功，請登入");
+                            isRegistering.value = false;
+                        } else {
+                            currentUser.value = {
+                                name: res.name,
+                                role: 'teacher',
+                                token: res.token,
+                                account: authForm.value.account
+                            };
+                            loadTeacherClasses();
+                        }
+                    }
+                };
+
+                const logout = () => {
+                    currentUser.value = { name: '', role: '', token: '' };
+                    view.value = 'home';
+                };
+
+                // --- Teacher Dashboard Logic ---
+                const loadTeacherClasses = async () => {
+                    const res = await callGas('get_classes', { teacherAccount: currentUser.value.account });
+                    if (res) {
+                        myClasses.value = res.data;
+                        view.value = 'teacher-dashboard-classes';
+                    }
+                };
+
+                const createClass = async () => {
+                    if(!newClassName.value) return;
+                    const res = await callGas('create_class', { 
+                        data: { 
+                            teacherAccount: currentUser.value.account, 
+                            className: newClassName.value 
+                        } 
+                    });
+                    if (res) {
+                        showCreateClassModal.value = false;
+                        newClassName.value = '';
+                        loadTeacherClasses();
+                    }
+                };
+
+                const enterClass = async (cls) => {
+                    currentClass.value = cls;
+                    await loadStudents(cls.id);
+                    view.value = 'teacher-class-manage';
+                    tab.value = 'score';
+                    selectedStudents.value = [];
+                    filterGroup.value = 'all';
+                };
+
+                const loadStudents = async (classId) => {
+                    const res = await callGas('get_students', { classId });
+                    if (res) {
+                        students.value = res.data;
+                    }
+                };
+
+                const addStudents = async () => {
+                    const lines = batchStudentInput.value.split('\n');
+                    const parsedStudents = [];
+                    lines.forEach(line => {
+                        const parts = line.trim().split(/\s+/); // split by space
+                        if (parts.length >= 3) {
+                            parsedStudents.push({
+                                seat: parts[0],
+                                name: parts[1],
+                                gender: parts[2],
+                                group: '無'
+                            });
+                        }
+                    });
+
+                    if (parsedStudents.length === 0) {
+                        alert("無有效資料");
+                        return;
+                    }
+
+                    const res = await callGas('add_students_batch', {
+                        data: {
+                            classId: currentClass.value.id,
+                            students: parsedStudents
+                        }
+                    });
+                    
+                    if (res) {
+                        alert(res.message);
+                        showAddStudentModal.value = false;
+                        batchStudentInput.value = '';
+                        loadStudents(currentClass.value.id);
+                    }
+                };
+
+                // --- Helper & Public Logic ---
+                const preparePublicView = async () => {
+                    await fetchPublicClasses();
+                    currentUser.value = { role: 'public', name: '訪客' };
+                    view.value = 'class-selector';
+                };
+
+                const prepareHelperLogin = async () => {
+                    await fetchPublicClasses();
+                    currentUser.value = { role: 'pending_helper', name: '' };
+                    view.value = 'class-selector';
+                };
+
+                const fetchPublicClasses = async () => {
+                    const res = await callGas('get_public_classes');
+                    if (res) publicClasses.value = res.data;
+                };
+
+                const selectClassForRole = async (cls) => {
+                    currentClass.value = cls;
+                    if (currentUser.value.role === 'pending_helper') {
+                        view.value = 'helper-login';
+                    } else {
+                        // Public view
+                        await loadStudents(cls.id);
+                        view.value = 'public-board';
+                    }
+                };
+
+                const handleHelperAuth = async () => {
+                    const res = await callGas('login_helper', { 
+                        data: {
+                            classId: currentClass.value.id,
+                            seatNo: helperForm.value.seatNo,
+                            password: helperForm.value.password
+                        }
+                    });
+                    
+                    if (res && res.status === 'success') {
+                        currentUser.value = { role: 'helper', name: res.studentName };
+                        await loadStudents(currentClass.value.id);
+                        view.value = 'public-board'; // Helper sees the board but with controls
+                    }
+                };
+
+                // --- Scoring & Selection Logic ---
+                const uniqueGroups = computed(() => {
+                    const groups = new Set(students.value.map(s => s.group).filter(g => g));
+                    return Array.from(groups);
+                });
+
+                const filteredStudents = computed(() => {
+                    if (filterGroup.value === 'all') return students.value;
+                    if (filterGroup.value === 'boy') return students.value.filter(s => s.gender === '男');
+                    if (filterGroup.value === 'girl') return students.value.filter(s => s.gender === '女');
+                    return students.value.filter(s => s.group === filterGroup.value);
+                });
+
+                const sortedStudents = computed(() => {
+                    return [...students.value].sort((a, b) => b.score - a.score);
+                });
+
+                const isTopScore = (score) => {
+                    if (students.value.length === 0) return false;
+                    const max = Math.max(...students.value.map(s => s.score));
+                    return score === max;
+                };
+
+                const toggleSelection = (id) => {
+                    const idx = selectedStudents.value.indexOf(id);
+                    if (idx > -1) selectedStudents.value.splice(idx, 1);
+                    else selectedStudents.value.push(id);
+                };
+
+                const toggleSelectAll = () => {
+                    if (selectAll.value) {
+                        selectedStudents.value = filteredStudents.value.map(s => s.id);
+                    } else {
+                        selectedStudents.value = [];
+                    }
+                };
+
+                const applyScore = async (val) => {
+                    if (selectedStudents.value.length === 0) {
+                        alert("請先選擇學生！");
+                        return;
+                    }
+                    
+                    // Optimistic UI update
+                    const targets = [...selectedStudents.value];
+                    targets.forEach(tid => {
+                        const s = students.value.find(stu => stu.id === tid);
+                        if (s) s.score += val;
+                    });
+
+                    // Send to backend
+                    const res = await callGas('update_score', {
+                        data: {
+                            targets: targets,
+                            value: val,
+                            type: 'score'
+                        }
+                    });
+
+                    // If failed, revert (omitted for brevity, but good practice)
+                    if (!res) {
+                         alert("更新失敗，正在重新載入");
+                         loadStudents(currentClass.value.id);
+                    }
+                    
+                    selectedStudents.value = [];
+                    selectAll.value = false;
+                };
+
+                const toggleHelperRole = async (stu) => {
+                    const newRole = stu.role === '小幫手' ? '一般' : '小幫手';
+                    const res = await callGas('update_score', { // Using update_score as generic updater
+                        data: {
+                            targets: [stu.id],
+                            value: newRole,
+                            type: 'role'
+                        }
+                    });
+                    if (res) stu.role = newRole;
+                };
+
+                const updateStudentAttr = async (stu, type, val) => {
+                     await callGas('update_score', {
+                        data: { targets: [stu.id], value: val, type: type }
+                    });
+                };
+
+                // --- Settings ---
+                const saveSettings = () => {
+                    localStorage.setItem('gas_app_url', tempGasUrl.value);
+                    localStorage.setItem('gemini_api_key', tempApiKey.value);
+                    gasUrl.value = tempGasUrl.value;
+                    apiKey.value = tempApiKey.value;
+                    showSettingsModal.value = false;
+                    location.reload();
+                };
+
+                const resetSettings = () => {
+                    if (confirm("確定要清除所有設定嗎？")) {
+                        localStorage.removeItem('gas_app_url');
+                        localStorage.removeItem('gemini_api_key');
+                        location.reload();
+                    }
+                };
+
+                const goHome = () => {
+                    if(currentUser.value.role === 'teacher') view.value = 'teacher-dashboard-classes';
+                    else view.value = 'home';
+                };
+                
+                const copyCode = () => {
+                   // 簡單實作：提示使用者自行複製，因為實際程式碼在 Code.gs 中
+                   alert("請複製後端程式碼區塊的內容");
+                };
+
+                return {
+                    gasUrl, view, loading, currentUser, authForm, isRegistering, helperForm,
+                    showSettingsModal, showInfoModal, showCreateClassModal, showAddStudentModal,
+                    tempGasUrl, tempApiKey, saveSettings, resetSettings,
+                    handleTeacherAuth, logout, myClasses, createClass, newClassName,
+                    enterClass, currentClass, tab, students, batchStudentInput, addStudents,
+                    preparePublicView, prepareHelperLogin, publicClasses, selectClassForRole, handleHelperAuth,
+                    filterGroup, uniqueGroups, filteredStudents, sortedStudents, isTopScore,
+                    selectedStudents, selectAll, toggleSelection, toggleSelectAll, applyScore,
+                    toggleHelperRole, updateStudentAttr, goHome, copyCode, hasDuplicateIds
+                };
+            }
+        }).mount('#app');
+    </script>
+</body>
+</html>
